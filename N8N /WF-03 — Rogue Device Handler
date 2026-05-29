@@ -1,0 +1,25 @@
+[Trigger từ WF-00]
+→ pfSense DHCP log: MAC address mới
+        │
+        ▼
+[Kiểm tra MAC trong whitelist]
+→ Query danh sách MAC đã đăng ký
+        │
+        ├─[MAC hợp lệ]──→ Log & bỏ qua
+        │
+        └─[MAC lạ]──────→ [Xác định vị trí]
+                           → Switch port nào? 
+                           → Site nào (cửa hàng/nhà máy)?
+                                │
+                                ▼
+                          [WF-SUB-01: Human Approval]
+                          → Gửi Telegram: 
+                            "Thiết bị lạ [MAC] tại [Site]
+                             Port [X] — Approve cô lập?"
+                                │
+                          [Nếu Approve]
+                                ▼
+                          [WF-SUB-02: Ansible Execute]
+                          → isolate_device.yml
+                            → Tạo VLAN quarantine
+                            → Move port sang VLAN đó
