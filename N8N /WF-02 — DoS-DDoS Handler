@@ -1,0 +1,20 @@
+[Trigger từ WF-00]
+        │
+        ▼
+[Đo lường bandwidth hiện tại]
+→ Gọi pfSense API: get interface stats
+        │
+        ▼
+[So sánh với baseline]
+→ Traffic > 150% baseline = ANOMALY
+→ Traffic > 300% baseline = CRITICAL
+        │
+        ├─[ANOMALY]──→ Gửi cảnh báo Telegram
+        │               Theo dõi thêm 5 phút
+        │               Nếu tiếp tục → leo thang CRITICAL
+        │
+        └─[CRITICAL]─→ [WF-SUB-01: Human Approval]
+                        → Admin quyết định:
+                          - Rate limit trên pfSense
+                          - Block IP range
+                          - Liên hệ ISP
