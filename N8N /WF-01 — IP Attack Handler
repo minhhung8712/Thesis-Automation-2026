@@ -1,0 +1,25 @@
+[Trigger từ WF-00]
+        │
+        ▼
+[Đánh giá Severity]
+→ AbuseIPDB score > 80   = HIGH
+→ Brute force > 10 lần   = HIGH  
+→ Port scan đơn lẻ       = MEDIUM
+→ IDS Alert priority 1   = HIGH
+        │
+        ▼
+[IF Severity = HIGH]──────────────────────────────┐
+        │                                          │
+        ▼                                          ▼
+[Auto block ngay]                    [WF-SUB-01: Human Approval]
+→ Gọi Ansible playbook               → Gửi Telegram alert + nút
+  block_ip.yml                         Approve / Reject
+→ Không cần chờ admin                → Chờ tối đa 15 phút
+                                       → Quá giờ: auto-escalate
+        │                                          │
+        └──────────────┬───────────────────────────┘
+                       ▼
+              [WF-SUB-02: Ansible Execute]
+                       │
+                       ▼
+              [WF-SUB-03: Log & Notify]
