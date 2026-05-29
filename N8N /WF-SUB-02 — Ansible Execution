@@ -1,0 +1,15 @@
+[Nhận: playbook_name + parameters]
+        │
+        ▼
+[Gọi Ansible Semaphore API]
+→ POST /api/project/{id}/tasks
+→ Body: {playbook, extra_vars: {ip, site, action}}
+        │
+        ▼
+[Poll trạng thái thực thi]
+→ Kiểm tra mỗi 10 giây
+→ Timeout tối đa 5 phút
+        │
+        ├─[SUCCESS]──→ WF-SUB-03
+        ├─[FAILED]───→ WF-SUB-03 + Alert admin ngay
+        └─[TIMEOUT]──→ WF-SUB-03 + Alert admin ngay
