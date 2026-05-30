@@ -1,0 +1,22 @@
+[Webhook/Syslog Trigger]
+        │
+        ▼
+[Parse & Normalize Log]
+→ Chuẩn hóa format: timestamp, src_ip, 
+  dst_ip, protocol, event_type, severity
+        │
+        ▼
+[Enrich Data]
+→ Gọi AbuseIPDB API kiểm tra IP reputation
+→ Gọi pfSense API lấy thêm context
+        │
+        ▼
+[Classify Event - Switch Node]
+→ event_type = "IDS_ALERT" / "PORT_SCAN" 
+  / "BRUTE_FORCE"     → WF-01
+→ event_type = "HIGH_BANDWIDTH" 
+  / "CONN_FLOOD"      → WF-02
+→ event_type = "NEW_MAC" 
+  / "UNKNOWN_DEVICE"  → WF-03
+→ event_type = "VPN_TUNNEL_DOWN"          → WF-04
+→ Không khớp         → Log & discard
