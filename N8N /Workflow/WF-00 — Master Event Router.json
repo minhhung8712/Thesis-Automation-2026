@@ -1,0 +1,146 @@
+{
+  "name": "WF-00 — Master Event Router",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pfsense-event",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-4001-8001-000000000001",
+      "name": "Webhook (pfSense event)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 320],
+      "webhookId": "pfsense-event"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== WF-00: Parse & Normalize + Classify =====\n// Forwarder syslog->HTTP da POST JSON vao webhook nay.\n// Code ho tro ca khi du lieu nam trong .body hoac o goc.\n\n// Map event_type cu the -> nhom handler\nconst ROUTE_MAP = {\n  IDS_ALERT: 'WF-01',\n  PORT_SCAN: 'WF-01',\n  BRUTE_FORCE: 'WF-01',\n  HIGH_BANDWIDTH: 'WF-02',\n  CONN_FLOOD: 'WF-02',\n  NEW_MAC: 'WF-03',\n  UNKNOWN_DEVICE: 'WF-03',\n  VPN_TUNNEL_DOWN: 'WF-04',\n};\n\nconst out = [];\nfor (const item of $input.all()) {\n  const input = item.json.body ?? item.json;\n  const eventType = (input.event_type || '').toString().toUpperCase();\n  const route = ROUTE_MAP[eventType] || 'DISCARD';\n\n  out.push({\n    json: {\n      event_id: input.event_id || `evt-${Date.now()}-${Math.floor(Math.random() * 1000)}`,\n      timestamp: input.timestamp || new Date().toISOString(),\n      src_ip: input.src_ip || null,\n      dst_ip: input.dst_ip || null,\n      protocol: input.protocol || null,\n      event_type: eventType,\n      severity: (input.severity || '').toString().toUpperCase() || null,\n      site: input.site || null,\n      raw: input,\n      route: route,\n    },\n  });\n}\nreturn out;"
+      },
+      "id": "a1b2c3d4-0002-4002-8002-000000000002",
+      "name": "Parse & Normalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 320]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+                "conditions": [
+                  { "leftValue": "={{ $json.route }}", "rightValue": "WF-01", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "WF-01 IP Attack"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+                "conditions": [
+                  { "leftValue": "={{ $json.route }}", "rightValue": "WF-02", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "WF-02 DoS/DDoS"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+                "conditions": [
+                  { "leftValue": "={{ $json.route }}", "rightValue": "WF-03", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "WF-03 Rogue Device"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+                "conditions": [
+                  { "leftValue": "={{ $json.route }}", "rightValue": "WF-04", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "WF-04 VPN Recovery"
+            }
+          ]
+        },
+        "options": { "fallbackOutput": "extra" }
+      },
+      "id": "a1b2c3d4-0003-4003-8003-000000000003",
+      "name": "Classify Event (Switch)",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [720, 320]
+    },
+    {
+      "parameters": {},
+      "id": "a1b2c3d4-0004-4004-8004-000000000004",
+      "name": "→ WF-01: IP Attack",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [980, 100]
+    },
+    {
+      "parameters": {},
+      "id": "a1b2c3d4-0005-4005-8005-000000000005",
+      "name": "→ WF-02: DoS/DDoS",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [980, 240]
+    },
+    {
+      "parameters": {},
+      "id": "a1b2c3d4-0006-4006-8006-000000000006",
+      "name": "→ WF-03: Rogue Device",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [980, 380]
+    },
+    {
+      "parameters": {},
+      "id": "a1b2c3d4-0007-4007-8007-000000000007",
+      "name": "→ WF-04: VPN Recovery",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [980, 520]
+    },
+    {
+      "parameters": {},
+      "id": "a1b2c3d4-0008-4008-8008-000000000008",
+      "name": "→ Discard (log only)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [980, 660]
+    }
+  ],
+  "connections": {
+    "Webhook (pfSense event)": {
+      "main": [[{ "node": "Parse & Normalize", "type": "main", "index": 0 }]]
+    },
+    "Parse & Normalize": {
+      "main": [[{ "node": "Classify Event (Switch)", "type": "main", "index": 0 }]]
+    },
+    "Classify Event (Switch)": {
+      "main": [
+        [{ "node": "→ WF-01: IP Attack", "type": "main", "index": 0 }],
+        [{ "node": "→ WF-02: DoS/DDoS", "type": "main", "index": 0 }],
+        [{ "node": "→ WF-03: Rogue Device", "type": "main", "index": 0 }],
+        [{ "node": "→ WF-04: VPN Recovery", "type": "main", "index": 0 }],
+        [{ "node": "→ Discard (log only)", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}
