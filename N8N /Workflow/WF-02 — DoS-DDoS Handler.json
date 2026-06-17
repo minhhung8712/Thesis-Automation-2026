@@ -1,0 +1,271 @@
+{
+  "name": "WF-02 — DoS/DDoS Handler",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "d2000000-0001-4001-8001-000000000001",
+      "name": "DoS Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        200,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://192.168.10.1/api/v2/status/interfaces",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "YOUR_PFSENSE_API_KEY"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "id": "d2000000-0002-4002-8002-000000000002",
+      "name": "Get Interface Stats",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        420,
+        360
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== WF-02: So sanh bandwidth voi baseline =====\nconst evt = $('DoS Trigger').first().json;\nconst BASELINE_MBPS = 100;   // >>> Khai chinh baseline theo lab <<<\n\nlet currentMbps = 0;\ntry {\n  const stats = $('Get Interface Stats').first().json;\n  // tuy cau truc JSON pfSense tra ve, Khai chinh lai duong dan field\n  currentMbps = Number(stats?.data?.mbps ?? stats?.mbps ?? evt.current_mbps ?? 0);\n} catch (e) { currentMbps = Number(evt.current_mbps ?? 0); }\n\nconst ratio = BASELINE_MBPS > 0 ? (currentMbps / BASELINE_MBPS) * 100 : 0;\nlet level = 'NORMAL';\nif (ratio > 300) level = 'CRITICAL';\nelse if (ratio > 150) level = 'ANOMALY';\n\nreturn [{ json: {\n  incident_id: evt.event_id || ('inc-' + Date.now()),\n  incident_type: 'DOS_DDOS',\n  src_ip: evt.src_ip || null,\n  site: evt.site || null,\n  baseline_mbps: BASELINE_MBPS,\n  current_mbps: currentMbps,\n  ratio_percent: Math.round(ratio),\n  level: level,\n  action_proposed: level === 'CRITICAL' ? 'rate_limit_or_block_range' : 'monitor',\n  ansible_playbook: 'rate_limit.yml',\n  raw: evt,\n}}];\n"
+      },
+      "id": "d2000000-0003-4003-8003-000000000003",
+      "name": "Compare vs Baseline",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.level }}",
+                    "rightValue": "NORMAL",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "NORMAL"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.level }}",
+                    "rightValue": "ANOMALY",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "ANOMALY"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.level }}",
+                    "rightValue": "CRITICAL",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "CRITICAL"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "none"
+        }
+      },
+      "id": "d2000000-0004-4004-8004-000000000004",
+      "name": "Route by Level",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        900,
+        360
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "d2000000-0005-4005-8005-000000000005",
+      "name": "→ Log (normal)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1160,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": 5,
+        "unit": "minutes"
+      },
+      "id": "d2000000-0006-4006-8006-000000000006",
+      "name": "Wait 5 min (theo doi)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1160,
+        360
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "d2000000-0007-4007-8007-000000000007",
+      "name": "→ Re-check & escalate (ANOMALY)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1380,
+        360
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "d2000000-0008-4008-8008-000000000008",
+      "name": "→ WF-SUB-01: Human Approval (CRITICAL)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1160,
+        560
+      ]
+    }
+  ],
+  "connections": {
+    "DoS Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Interface Stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Interface Stats": {
+      "main": [
+        [
+          {
+            "node": "Compare vs Baseline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compare vs Baseline": {
+      "main": [
+        [
+          {
+            "node": "Route by Level",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Level": {
+      "main": [
+        [
+          {
+            "node": "→ Log (normal)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait 5 min (theo doi)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "→ WF-SUB-01: Human Approval (CRITICAL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 5 min (theo doi)": {
+      "main": [
+        [
+          {
+            "node": "→ Re-check & escalate (ANOMALY)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
