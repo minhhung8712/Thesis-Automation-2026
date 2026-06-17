@@ -1,0 +1,298 @@
+{
+  "name": "WF-SUB-02 — Ansible Execution",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "a0200000-0001-4001-8001-000000000001",
+      "name": "Ansible Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        180,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== Chuan bi body goi Semaphore =====\nconst evt = $('Ansible Trigger').first().json;\nreturn [{ json: {\n  ...evt,\n  semaphore_base: 'http://192.168.10.30:3000',  // >>> URL Semaphore <<<\n  project_id: 1,                                  // >>> project id <<<\n  template_id: 1,                                 // >>> map playbook -> template_id <<<\n  extra_vars: JSON.stringify({\n    ip: evt.src_ip || null,\n    site: evt.site || null,\n    action: evt.action_proposed || null,\n  }),\n}}];\n"
+      },
+      "id": "a0200000-0002-4002-8002-000000000002",
+      "name": "Build Semaphore Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        380,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.semaphore_base }}/api/project/{{ $json.project_id }}/tasks",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_SEMAPHORE_TOKEN"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"template_id\": {{ $json.template_id }},\n  \"debug\": false,\n  \"environment\": {{ JSON.stringify($json.extra_vars) }}\n}",
+        "options": {}
+      },
+      "id": "a0200000-0003-4003-8003-000000000003",
+      "name": "Start Semaphore Task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        600,
+        320
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": 10,
+        "unit": "seconds"
+      },
+      "id": "a0200000-0004-4004-8004-000000000004",
+      "name": "Wait 10s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        820,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Build Semaphore Request').first().json.semaphore_base }}/api/project/{{ $('Build Semaphore Request').first().json.project_id }}/tasks/{{ $('Start Semaphore Task').first().json.id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_SEMAPHORE_TOKEN"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a0200000-0005-4005-8005-000000000005",
+      "name": "Get Task Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1040,
+        320
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== Chuan hoa status tu Semaphore =====\nconst j = $input.first().json;\nconst status = (j.status || j.data?.status || 'running').toString().toLowerCase();\nreturn [{ json: { ...j, status } }];\n"
+      },
+      "id": "a0200000-0006-4006-8006-000000000006",
+      "name": "Normalize Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1260,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "success",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "success"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "error",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "error"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "a0200000-0007-4007-8007-000000000007",
+      "name": "Check Status",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1480,
+        320
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "a0200000-0008-4008-8008-000000000008",
+      "name": "→ WF-SUB-03 (success)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1740,
+        180
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "a0200000-0009-4009-8009-000000000009",
+      "name": "→ WF-SUB-03 + Alert (failed)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1740,
+        320
+      ]
+    }
+  ],
+  "connections": {
+    "Ansible Trigger": {
+      "main": [
+        [
+          {
+            "node": "Build Semaphore Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Semaphore Request": {
+      "main": [
+        [
+          {
+            "node": "Start Semaphore Task",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start Semaphore Task": {
+      "main": [
+        [
+          {
+            "node": "Wait 10s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 10s": {
+      "main": [
+        [
+          {
+            "node": "Get Task Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Task Status": {
+      "main": [
+        [
+          {
+            "node": "Normalize Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Status": {
+      "main": [
+        [
+          {
+            "node": "Check Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Status": {
+      "main": [
+        [
+          {
+            "node": "→ WF-SUB-03 (success)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "→ WF-SUB-03 + Alert (failed)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait 10s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
