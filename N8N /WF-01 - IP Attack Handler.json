@@ -1,0 +1,297 @@
+{
+  "name": "WF-01 — IP Attack Handler",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "b1000000-0001-4001-8001-000000000001",
+      "name": "IP Attack Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        220,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.abuseipdb.com/api/v2/check",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "ipAddress",
+              "value": "={{ $json.src_ip }}"
+            },
+            {
+              "name": "maxAgeInDays",
+              "value": "90"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Key",
+              "value": "YOUR_ABUSEIPDB_API_KEY"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b1000000-0002-4002-8002-000000000002",
+      "name": "AbuseIPDB Check",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        360
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== WF-01: Whitelist + Severity + Decision =====\n// Doc event goc tu Trigger, abuse score tu node AbuseIPDB, ra quyet dinh hanh dong.\n\n// --- Whitelist: IP/CIDR KHONG BAO GIO block (admin, gateway, ha tang) ---\n// >>> Khai sua danh sach nay theo lab cua minh <<<\nconst WHITELIST = [\n  '192.168.10.1',      // pfSense\n  '192.168.10.2',      // n8n\n  '192.168.10.30',     // ansible\n  // '192.168.10.0/24', // bo comment neu muon bo qua toan bo LAN noi bo\n];\n\nfunction ipToLong(ip){\n  return ip.split('.').reduce((a,o)=> ((a<<8) + (parseInt(o,10)&255)) >>> 0, 0) >>> 0;\n}\nfunction inCidr(ip, cidr){\n  if(!cidr.includes('/')) return ip === cidr;\n  const [net, bitsStr] = cidr.split('/');\n  const bits = parseInt(bitsStr,10);\n  if(bits === 0) return true;\n  const mask = (~((1 << (32-bits)) - 1)) >>> 0;\n  return (ipToLong(ip) & mask) === (ipToLong(net) & mask);\n}\nfunction isWhitelisted(ip){\n  if(!ip) return false;\n  return WHITELIST.some(c => { try { return inCidr(ip, c); } catch(e){ return false; } });\n}\n\n// Lay event goc tu trigger va abuse score tu node AbuseIPDB (an toan neu chua co key)\nconst evt = $('IP Attack Trigger').first().json;\nlet abuseScore = 0;\ntry { abuseScore = $('AbuseIPDB Check').first().json?.data?.abuseConfidenceScore ?? 0; } catch(e){ abuseScore = 0; }\n\nconst eventType = (evt.event_type || '').toUpperCase();\nconst inSev = (evt.severity || '').toUpperCase();\nconst srcIp = evt.src_ip || null;\n\n// --- Tinh severity (theo rule cua Khai) ---\nlet severity = 'LOW';\nif (abuseScore > 80) severity = 'HIGH';\nelse if (eventType === 'BRUTE_FORCE') severity = 'HIGH';\nelse if (eventType === 'IDS_ALERT' && inSev === 'HIGH') severity = 'HIGH';\nelse if (eventType === 'PORT_SCAN') severity = 'MEDIUM';\nelse if (inSev) severity = inSev;\n\n// --- Quyet dinh hanh dong ---\n// Phan biet CONFIDENCE (chac chan xau) vs IMPACT (muc tac dong)\nlet decision;\nif (isWhitelisted(srcIp)) {\n  decision = 'WHITELISTED';      // IP an toan -> KHONG block, chi log\n} else if (abuseScore > 80 || (eventType === 'IDS_ALERT' && inSev === 'HIGH')) {\n  decision = 'AUTO_BLOCK';       // confidence cao + block 1 IP -> tu dong, khong hoi\n} else if (severity === 'HIGH') {\n  decision = 'NEEDS_APPROVAL';   // nghiem trong nhung chua chac chan -> hoi admin\n} else {\n  decision = 'MONITOR';          // MEDIUM/LOW -> theo doi / log\n}\n\nreturn [{ json: {\n  incident_id: evt.event_id || ('inc-' + Date.now()),\n  timestamp: evt.timestamp || new Date().toISOString(),\n  incident_type: eventType,\n  src_ip: srcIp,\n  dst_ip: evt.dst_ip || null,\n  site: evt.site || null,\n  abuse_score: abuseScore,\n  severity: severity,\n  decision: decision,\n  action_proposed: 'block_ip',\n  ansible_playbook: 'block_ip.yml',\n  raw: evt,\n}}];\n"
+      },
+      "id": "b1000000-0003-4003-8003-000000000003",
+      "name": "Whitelist + Severity + Decision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.decision }}",
+                    "rightValue": "WHITELISTED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "WHITELISTED"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.decision }}",
+                    "rightValue": "AUTO_BLOCK",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "AUTO_BLOCK"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.decision }}",
+                    "rightValue": "NEEDS_APPROVAL",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "NEEDS_APPROVAL"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.decision }}",
+                    "rightValue": "MONITOR",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "MONITOR"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "none"
+        }
+      },
+      "id": "b1000000-0004-4004-8004-000000000004",
+      "name": "Route by Decision",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        920,
+        360
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "b1000000-0005-4005-8005-000000000005",
+      "name": "→ Log only (whitelisted)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1180,
+        140
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "b1000000-0006-4006-8006-000000000006",
+      "name": "→ WF-SUB-02: Auto block",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1180,
+        300
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "b1000000-0007-4007-8007-000000000007",
+      "name": "→ WF-SUB-01: Human Approval",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1180,
+        460
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "b1000000-0008-4008-8008-000000000008",
+      "name": "→ Monitor / Log",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1180,
+        620
+      ]
+    }
+  ],
+  "connections": {
+    "IP Attack Trigger": {
+      "main": [
+        [
+          {
+            "node": "AbuseIPDB Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AbuseIPDB Check": {
+      "main": [
+        [
+          {
+            "node": "Whitelist + Severity + Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Whitelist + Severity + Decision": {
+      "main": [
+        [
+          {
+            "node": "Route by Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Decision": {
+      "main": [
+        [
+          {
+            "node": "→ Log only (whitelisted)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "→ WF-SUB-02: Auto block",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "→ WF-SUB-01: Human Approval",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "→ Monitor / Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
