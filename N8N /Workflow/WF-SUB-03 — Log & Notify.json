@@ -1,0 +1,193 @@
+{
+  "name": "WF-SUB-03 — Log & Notify",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "a0300000-0001-4001-8001-000000000001",
+      "name": "Log Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        180,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== Tao ban ghi incident + noi dung Telegram =====\nconst evt = $('Log Trigger').first().json;\nconst record = {\n  id: evt.incident_id || ('inc-' + Date.now()),\n  timestamp: evt.timestamp || new Date().toISOString(),\n  type: evt.incident_type || null,\n  severity: evt.severity || null,\n  src_ip: evt.src_ip || null,\n  action_taken: evt.action_proposed || evt.action || null,\n  result: evt.result || evt.status || 'done',\n  approved_by: evt.approved_by || 'auto',\n  site: evt.site || null,\n};\nconst text =\n  `✅ Da xu ly: ${record.action_taken || 'N/A'} ${record.src_ip || ''}\\n` +\n  `Loai: ${record.type} | Severity: ${record.severity}\\n` +\n  `Ket qua: ${record.result} | Boi: ${record.approved_by}`;\nreturn [{ json: { ...record, chat_id: 'YOUR_CHAT_ID', chat_text: text } }];\n"
+      },
+      "id": "a0300000-0002-4002-8002-000000000002",
+      "name": "Build Incident Record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $json.chat_id || 'YOUR_CHAT_ID' }}",
+        "text": "={{ $json.chat_text }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "a0300000-0003-4003-8003-000000000003",
+      "name": "Send Telegram Summary",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        640,
+        320
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.action_taken }}",
+              "rightValue": "block_ip",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "a0300000-0004-4004-8004-000000000004",
+      "name": "If block_ip?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        880,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://192.168.10.1/api/v2/firewall/alias/entries",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "YOUR_PFSENSE_API_KEY"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"name\": \"soar_blocklist\",\n  \"address\": [\"{{ $json.src_ip }}\"]\n}",
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "id": "a0300000-0005-4005-8005-000000000005",
+      "name": "Update pfSense Alias",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        220
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {},
+      "id": "a0300000-0006-4006-8006-000000000006",
+      "name": "Done (logged)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1360,
+        320
+      ]
+    }
+  ],
+  "connections": {
+    "Log Trigger": {
+      "main": [
+        [
+          {
+            "node": "Build Incident Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Incident Record": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Telegram Summary": {
+      "main": [
+        [
+          {
+            "node": "If block_ip?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If block_ip?": {
+      "main": [
+        [
+          {
+            "node": "Update pfSense Alias",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Done (logged)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update pfSense Alias": {
+      "main": [
+        [
+          {
+            "node": "Done (logged)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
