@@ -1,0 +1,68 @@
+{
+  "name": "WF-Discard — Log Only",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "c1000000-0001-4001-8001-000000000001",
+      "name": "Discard Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== WF-Discard: Log only =====\n// Nhan event KHONG khop handler nao tu WF-00 (nhanh fallback cua Switch).\n// Chi ghi lai de truy vet, khong thuc hien hanh dong nao.\nconst out = [];\nfor (const item of $input.all()) {\n  const e = item.json;\n  out.push({ json: {\n    discarded_at: new Date().toISOString(),\n    reason: 'event_type khong khop handler nao',\n    event_type: e.event_type || null,\n    src_ip: e.src_ip || null,\n    raw: e,\n  }});\n}\nreturn out;\n"
+      },
+      "id": "c1000000-0002-4002-8002-000000000002",
+      "name": "Build Discard Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        300
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "c1000000-0003-4003-8003-000000000003",
+      "name": "Logged (xem trong Executions)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        740,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Discard Trigger": {
+      "main": [
+        [
+          {
+            "node": "Build Discard Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Discard Log": {
+      "main": [
+        [
+          {
+            "node": "Logged (xem trong Executions)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
