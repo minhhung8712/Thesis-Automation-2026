@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Event Simulator cho he thong SOAR n8n
+Event Simulator cho he thong n8n
 --------------------------------------
 Ban loat event gia vao webhook WF-00 de test toan bo cac nhanh
 ma KHONG can pfSense hay forwarder. Chay: python event_simulator.py
