@@ -1,0 +1,15 @@
+[
+  {
+    "event_type": "IDS_ALERT",
+    "src_ip": "203.0.113.45",
+    "severity": "HIGH",
+    "site": "HCM-01"
+  }
+]
+
+
+[{"event_type": "IDS_ALERT", "src_ip": "192.168.10.1", "severity": "HIGH", "site": "HCM-01"}]
+
+[{"event_type": "PORT_SCAN", "src_ip": "198.51.100.7", "severity": "MEDIUM", "site": "HCM-01"}]
+
+[{"event_type": "IDS_ALERT", "src_ip": "45.33.12.50", "severity": "LOW", "site": "HCM-01"}]
