@@ -59,7 +59,7 @@ ONLY_ACCEPT_FROM_PFSENSE = True
 #     False = nhận từ bất kỳ đâu (tiện cho lúc test, bắn UDP giả từ localhost).
 
 SITE = "HCM-01"
-DEBUG_FORWARD_ALL = False
+DEBUG_FORWARD_ALL = True
 #   ^ True = forward CẢ log không nhận diện được (gắn nhãn UNKNOWN) — chỉ để debug.
 #     False = chỉ forward event an ninh thật (bỏ qua DNS/NTP/log nền).
 
@@ -70,7 +70,7 @@ INTERNAL_NETS = ["192.168.10.", "192.168.11.", "192.168.12.", "192.168.20."]
 # --- Cấu hình file log xoay vòng ---
 LOG_FILE      = "forwarded_events.log"
 LOG_MAX_BYTES = 10 * 1024 * 1024   # mỗi file tối đa 10 MB
-LOG_BACKUP    = 5                  # giữ 5 file gần nhất, cũ hơn thì xóa
+LOG_BACKUP    = 10                  # giữ 10 file gần nhất, cũ hơn thì xóa
 
 
 # ╔══════════════════════════════════════════════════════════════════╗
@@ -245,8 +245,7 @@ def post_to_n8n(payload: dict):
 
 
 # ╔══════════════════════════════════════════════════════════════════╗
-# ║ PHẦN 5 — VÒNG LẶP CHÍNH: NƠI NHẬN TÍN HIỆU TỪ pfSense            ║
-# ║ >>> ĐÂY CHÍNH LÀ CHỖ KHẢI HỎI <<<                                ║
+# ║ PHẦN 5 — VÒNG LẶP CHÍNH: NƠI NHẬN TÍN HIỆU TỪ pfSense            ║                               ║
 # ╚══════════════════════════════════════════════════════════════════╝
 
 def main():
