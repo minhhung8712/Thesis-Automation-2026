@@ -54,7 +54,7 @@ N8N_WEBHOOK = "http://127.0.0.1:5678/webhook/pfsense-event"
 PFSENSE_IP = "192.168.10.1"
 #   ^ IP của pfSense. Ta dùng nó để KIỂM TRA gói đến có đúng từ pfSense không.
 
-ONLY_ACCEPT_FROM_PFSENSE = False
+ONLY_ACCEPT_FROM_PFSENSE = True
 #   ^ True  = CHỈ xử lý gói gửi từ 192.168.10.1 (bảo mật hơn, production).
 #     False = nhận từ bất kỳ đâu (tiện cho lúc test, bắn UDP giả từ localhost).
 
