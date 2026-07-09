@@ -74,7 +74,10 @@ IGNORE_EXACT = ["192.168.183.1", "192.168.10.1"]
 THRESHOLDS = {
     "BRUTE_FORCE": {"count": 5,           "window": 60},   # 5 lần fail / 60s (cùng 1 port)
     "PORT_SCAN":   {"distinct_ports": 15, "window": 10},   # 15 port khác nhau / 10s
-    "CONN_FLOOD":  {"count": 100,         "window": 10},   # 100 sự kiện / 10s
+    "CONN_FLOOD":  {"count": 100,         "window": 10},   # 100 sự kiện / 10s (DoS 1 nguồn)
+    # --- Ngưỡng phát hiện DDoS phân tán (đếm TỔNG toàn hệ thống, không theo IP) ---
+    "DDOS_VOLUME": {"count": 500,         "window": 10},   # tổng mọi IP > 500 event/10s
+    "DDOS_SPREAD": {"distinct_ips": 20,   "window": 10},   # > 20 IP khác nhau cùng tấn công
 }
 
 COOLDOWN        = 300    # giây: sau khi báo 1 IP+loại, KHÔNG báo lại trong 5 phút (chống spam)
@@ -190,6 +193,23 @@ _last_alert = {}
 
 _MAX_WINDOW = 60   # giữ tối đa 60 giây lịch sử mỗi IP (đủ cho mọi ngưỡng)
 
+# _global_events: bộ đếm TỔNG toàn hệ thống (KHÔNG theo IP) để phát hiện DDoS
+# phân tán — nơi mỗi IP chỉ tạo ít event nên bộ đếm theo-IP không bắt được,
+# nhưng TỔNG từ nhiều IP thì rất lớn. Mỗi phần tử = (timestamp, src_ip).
+_global_events = deque()
+
+
+def _global_record(ip, now):
+    """Ghi 1 sự kiện vào bộ đếm tổng, trả về (tổng_event, số_IP_khác_nhau)
+    trong cửa sổ DDoS. Dùng để phát hiện tấn công phân tán."""
+    _global_events.append((now, ip))
+    cutoff = now - THRESHOLDS["DDOS_VOLUME"]["window"]
+    while _global_events and _global_events[0][0] < cutoff:
+        _global_events.popleft()
+    total = len(_global_events)
+    distinct_ips = len({src for _, src in _global_events})
+    return total, distinct_ips
+
 
 def _trim(dq, now):
     """Xóa các sự kiện cũ hơn cửa sổ tối đa (60s) khỏi hàng đợi."""
@@ -264,6 +284,14 @@ def record_and_detect(ip, dport, kind, now=None):
     dp = _distinct_ports(dq, now, ths["window"], kind="fw_block")
     if dp >= ths["distinct_ports"]:
         return ("PORT_SCAN", dp)
+
+    # (4) DDoS PHÂN TÁN: xét TỔNG toàn hệ thống (nhiều IP, mỗi IP ít event
+    #     nên không IP nào vượt ngưỡng riêng, nhưng tổng thì rất lớn)
+    total_g, distinct_ips = _global_record(ip, now)
+    if distinct_ips >= THRESHOLDS["DDOS_SPREAD"]["distinct_ips"] and total_g >= 100:
+        return ("DDOS", f"{distinct_ips} IP / {total_g} event")   # nhiều nguồn -> DDoS
+    if total_g >= THRESHOLDS["DDOS_VOLUME"]["count"]:
+        return ("DDOS", f"{total_g} event tong")                  # tổng quá lớn -> nghi DDoS
 
     return None
 
@@ -378,11 +406,12 @@ def build_detection_event(event_type, sig, metric):
     """Dựng event PHÁT HIỆN (đã vượt ngưỡng) để gửi n8n, kèm số liệu minh chứng."""
     th = THRESHOLDS.get(event_type, {})
     win = th.get("window", "?")
-    sev = "HIGH" if event_type in ("BRUTE_FORCE", "CONN_FLOOD") else "MEDIUM"
+    sev = "HIGH" if event_type in ("BRUTE_FORCE", "CONN_FLOOD", "DDOS") else "MEDIUM"
     detail = {
         "BRUTE_FORCE": f"{metric} lan dang nhap sai trong {win}s",
         "PORT_SCAN":   f"cham {metric} port khac nhau trong {win}s",
         "CONN_FLOOD":  f"{metric} ket noi trong {win}s",
+        "DDOS":        f"DDoS phan tan: {metric}",
     }.get(event_type, f"metric={metric}")
     return {
         "event_type": event_type,
