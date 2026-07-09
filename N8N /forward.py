@@ -2,80 +2,79 @@
 # -*- coding: utf-8 -*-
 """
 ========================================================================
- forwarder.py  —  CẦU NỐI SYSLOG (pfSense) → WEBHOOK (n8n)
+ forwarder.py  —  CẦU NỐI SYSLOG (pfSense) → WEBHOOK (n8n)   [BẢN HOÀN CHỈNH]
 ========================================================================
 
-VAI TRÒ TRONG HỆ THỐNG:
-  pfSense (192.168.10.1) chỉ biết "nói" bằng giao thức SYSLOG (text thô,
-  gửi qua UDP). n8n chỉ biết "nghe" bằng HTTP (JSON). Hai bên KHÔNG nói
-  chuyện trực tiếp được. File này đứng GIỮA, làm 3 việc:
+VAI TRÒ:
+  pfSense (192.168.10.1) "nói" bằng syslog UDP (text thô). n8n "nghe" bằng
+  HTTP JSON. File này đứng giữa, làm 3 việc: NGHE → DỊCH → LỌC & GỬI.
+  Chạy trên chính VM n8n (192.168.10.2).
 
-     1. NGHE  : mở 1 cổng UDP, chờ pfSense bắn gói syslog sang.
-     2. DỊCH  : đọc dòng text, dùng regex bóc ra IP / loại sự kiện / mức độ.
-     3. GỬI   : đóng gói thành JSON, POST sang webhook của n8n.
+CƠ CHẾ PHÂN LOẠI (parse_line xét theo thứ tự ưu tiên):
+  (1) Suricata alert  → đọc tên rule, phân biệt BRUTE_FORCE/PORT_SCAN/IDS_ALERT
+  (2) VPN down        → VPN_TUNNEL_DOWN
+  (3) DHCP mới        → NEW_MAC
+  (4) Filterlog block → đoán theo PORT ĐÍCH: port 22/3389... = BRUTE_FORCE,
+                        còn lại = PORT_SCAN
+  (5) Không khớp      → UNKNOWN (chỉ khi DEBUG) hoặc bỏ qua
 
-  Nó chạy TRÊN CHÍNH máy n8n (192.168.10.2), nên về kiến trúc vẫn thuộc
-  "khối n8n", không phải server thứ tư.
-
-LUỒNG 1 GÓI TIN:
-  pfSense --UDP:514--> [recvfrom nhận] --> [parse_line dịch] --> [POST] --> n8n
+LƯU Ý: filterlog KHÔNG chứa tên loại tấn công, nên (4) chỉ là "đoán theo
+  port". Muốn phân loại CHÍNH XÁC (đọc nội dung) thì phải bật Suricata (1).
 ========================================================================
 """
 
-import socket                    # thư viện mạng cấp thấp: tạo "ổ cắm" UDP để nghe
-import json                      # đóng gói dữ liệu thành chuỗi JSON
-import re                        # regex: bóc tách thông tin từ dòng text
-import logging                   # ghi log ra file
-import urllib.request            # gửi HTTP POST (không cần cài thêm 'requests')
-from logging.handlers import RotatingFileHandler   # file log tự xoay vòng
+import socket
+import json
+import re
+import logging
+import urllib.request
+from logging.handlers import RotatingFileHandler
 from datetime import datetime, timezone
 
 
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║ PHẦN 1 — CẤU HÌNH                                                 ║
-# ║ Đây là các thông số Khải chỉnh tùy môi trường.                   ║
 # ╚══════════════════════════════════════════════════════════════════╝
 
-LISTEN_IP   = "0.0.0.0"
-#   ^ "0.0.0.0" = nghe trên MỌI card mạng của máy n8n (192.168.10.2).
-#     Đây là IP CỦA CHÍNH MÁY N8N, không phải IP pfSense.
-#     (Đừng đổi thành 192.168.10.1 — đó là nhà hàng xóm, sẽ lỗi bind.)
-
-LISTEN_PORT = 514
-#   ^ Cổng chờ nhận. PHẢI khớp với port ghi trong pfSense
-#     (Remote log servers = 192.168.10.2:514). pfSense gửi tới 514,
-#     nên ở đây cũng phải nghe 514.
-
+LISTEN_IP   = "0.0.0.0"        # nghe trên mọi card mạng CỦA MÁY N8N (không phải IP pfSense)
+LISTEN_PORT = 514             # khớp port pfSense gửi (192.168.10.2:514)
 N8N_WEBHOOK = "http://127.0.0.1:5678/webhook/pfsense-event"
-#   ^ Địa chỉ webhook của WF-00. Vì forwarder chạy CÙNG máy với n8n
-#     nên dùng 127.0.0.1 (localhost) là được.
+SITE        = "HCM-01"
 
-# --- AI ĐƯỢC PHÉP GỬI SYSLOG CHO TA? ---
-PFSENSE_IP = "192.168.10.1"
-#   ^ IP của pfSense. Ta dùng nó để KIỂM TRA gói đến có đúng từ pfSense không.
+PFSENSE_IP  = "192.168.10.1"
+ONLY_ACCEPT_FROM_PFSENSE = False   # True = chỉ nhận gói từ pfSense (production)
+DEBUG_FORWARD_ALL        = False   # True = forward cả log nền (UNKNOWN) để debug
 
-ONLY_ACCEPT_FROM_PFSENSE = True
-#   ^ True  = CHỈ xử lý gói gửi từ 192.168.10.1 (bảo mật hơn, production).
-#     False = nhận từ bất kỳ đâu (tiện cho lúc test, bắn UDP giả từ localhost).
-
-SITE = "HCM-01"
-DEBUG_FORWARD_ALL = True
-#   ^ True = forward CẢ log không nhận diện được (gắn nhãn UNKNOWN) — chỉ để debug.
-#     False = chỉ forward event an ninh thật (bỏ qua DNS/NTP/log nền).
-
+# Dải mạng NỘI BỘ — IP thuộc các dải này KHÔNG bị coi là attacker
 INTERNAL_NETS = ["192.168.10.", "192.168.11.", "192.168.12.", "192.168.20."]
-#   ^ Các dải mạng NỘI BỘ. IP thuộc các dải này KHÔNG bị coi là attacker
-#     (tránh block nhầm hạ tầng của chính mình).
 
-# --- Cấu hình file log xoay vòng ---
+# IP hạ tầng / noise — bỏ qua theo TIỀN TỐ (prefix)
+IGNORE_PREFIXES = [
+    "169.254.",       # link-local (Windows tự sinh)
+    "224.", "239.",   # multicast
+    "255.",           # broadcast
+    "0.",             # invalid
+    "127.",           # loopback
+]
+
+# IP cụ thể bỏ qua — so khớp CHÍNH XÁC (tránh nhầm 192.168.183.1 với .133)
+IGNORE_EXACT = [
+    "192.168.183.1",  # gateway WAN (KHÔNG phải attacker)
+    "192.168.10.1",   # pfSense LAN
+]
+
+# Các cổng dịch vụ thường bị BRUTE FORCE (đăng nhập)
+BRUTE_PORTS = {22: "SSH", 3389: "RDP", 21: "FTP", 23: "Telnet",
+               3306: "MySQL", 5432: "PostgreSQL", 1433: "MSSQL"}
+
+# File log xoay vòng
 LOG_FILE      = "forwarded_events.log"
-LOG_MAX_BYTES = 10 * 1024 * 1024   # mỗi file tối đa 10 MB
-LOG_BACKUP    = 10                  # giữ 10 file gần nhất, cũ hơn thì xóa
+LOG_MAX_BYTES = 10 * 1024 * 1024   # 10 MB mỗi file
+LOG_BACKUP    = 5                  # giữ 5 file gần nhất
 
 
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║ PHẦN 2 — BỘ GHI LOG RA FILE (rotating)                            ║
-# ║ Lưu lại các event ĐÃ forward, phục vụ backup và điều tra sự cố.  ║
 # ╚══════════════════════════════════════════════════════════════════╝
 
 logger = logging.getLogger("forwarder")
@@ -84,43 +83,51 @@ _fh = RotatingFileHandler(LOG_FILE, maxBytes=LOG_MAX_BYTES,
                           backupCount=LOG_BACKUP, encoding="utf-8")
 _fh.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
 logger.addHandler(_fh)
-#   ^ RotatingFileHandler tự động: khi file đầy 10MB → đổi tên thành .1,
-#     tạo file mới. Giữ tối đa 5 file cũ. Nhờ vậy log không phình vô hạn.
 
 
 # ╔══════════════════════════════════════════════════════════════════╗
-# ║ PHẦN 3 — CÁC MẪU REGEX ĐỂ BÓC TÁCH DÒNG SYSLOG                    ║
+# ║ PHẦN 3 — REGEX                                                    ║
 # ╚══════════════════════════════════════════════════════════════════╝
 
-# Regex cho alert Suricata (định dạng fast.log):
-RE_PRIORITY = re.compile(r"\[Priority:\s*(\d+)\]")          # bóc [Priority: 1]
-RE_MSG      = re.compile(r"\[\d+:\d+:\d+\]\s+(.*?)\s+\[\*\*\]")  # tên rule
-RE_CLASS    = re.compile(r"\[Classification:\s*(.*?)\]")    # phân loại
+# Suricata fast.log
+RE_PRIORITY = re.compile(r"\[Priority:\s*(\d+)\]")
+RE_MSG      = re.compile(r"\[\d+:\d+:\d+\]\s+(.*?)\s+\[\*\*\]")
+RE_CLASS    = re.compile(r"\[Classification:\s*(.*?)\]")
 RE_FLOW     = re.compile(r"\{(\w+)\}\s+([\d.]+):(\d+)\s+->\s+([\d.]+):(\d+)")
-#   ^ RE_FLOW bóc: {TCP} 192.168.183.133:40000 -> 192.168.10.1:80
-#     group(1)=proto  group(2)=src_ip  group(3)=src_port
-#     group(4)=dst_ip group(5)=dst_port
 
-RE_ANY_IP = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b")    # bắt mọi IPv4
-RE_MAC    = re.compile(r"([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})")  # bắt MAC
+# Tiện ích
+RE_ANY_IP = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b")
+RE_MAC    = re.compile(r"([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})")
+
+# Filterlog: ...,src_ip,dst_ip,sport,dport,...  -> lấy 2 IP + 2 port liền nhau
+RE_FILTERLOG_PORTS = re.compile(
+    r"(\d{1,3}(?:\.\d{1,3}){3}),(\d{1,3}(?:\.\d{1,3}){3}),(\d+),(\d+)")
 
 
 # ╔══════════════════════════════════════════════════════════════════╗
-# ║ PHẦN 4 — CÁC HÀM PHỤ TRỢ                                          ║
+# ║ PHẦN 4 — HÀM PHỤ TRỢ                                              ║
 # ╚══════════════════════════════════════════════════════════════════╝
 
 def severity_from_priority(prio: str) -> str:
-    """Suricata Priority 1/2/3 -> mức độ HIGH/MEDIUM/LOW."""
     return {"1": "HIGH", "2": "MEDIUM", "3": "LOW"}.get(prio, "MEDIUM")
 
 
 def is_internal(ip: str) -> bool:
-    """IP này có thuộc mạng nội bộ không? (để không block nhầm)."""
+    """IP thuộc mạng nội bộ (không coi là attacker)."""
     return bool(ip) and any(ip.startswith(net) for net in INTERNAL_NETS)
 
 
+def should_ignore(ip: str) -> bool:
+    """IP hạ tầng / noise -> luôn bỏ qua."""
+    if not ip:
+        return True
+    if ip in IGNORE_EXACT:                                   # khớp chính xác
+        return True
+    return any(ip.startswith(p) for p in IGNORE_PREFIXES)   # khớp tiền tố
+
+
 def pick_attacker(src: str, dst: str):
-    """Trong 2 IP, chọn IP KHÔNG thuộc nội bộ làm attacker."""
+    """Chọn IP KHÔNG thuộc nội bộ làm attacker."""
     if src and not is_internal(src):
         return src
     if dst and not is_internal(dst):
@@ -129,9 +136,9 @@ def pick_attacker(src: str, dst: str):
 
 
 def classify_suricata(msg: str, classification: str) -> str:
-    """Dựa vào tên rule + phân loại, quy về event_type mà WF-00 hiểu."""
+    """Đọc tên rule + phân loại của Suricata -> event_type. (Chính xác nhất)"""
     text = (msg + " " + classification).lower()
-    if "brute" in text or "ssh scan" in text:
+    if "brute" in text or "ssh scan" in text or "login" in text:
         return "BRUTE_FORCE"
     if "scan" in text or "information leak" in text:
         return "PORT_SCAN"
@@ -142,50 +149,75 @@ def classify_suricata(msg: str, classification: str) -> str:
 
 def parse_filterlog(raw: str):
     """
-    Parse log FIREWALL (filterlog) — sinh ra khi pfSense CHẶN một gói tin.
-    Đây là nguồn tín hiệu CHÍNH khi Suricata chưa bật: nếu 1 IP lạ bị chặn
-    liên tục thì rất có thể đang quét cổng.
+    Parse log FIREWALL (filterlog) khi pfSense CHẶN gói.
+    filterlog KHÔNG có tên tấn công, nên ĐOÁN theo PORT ĐÍCH:
+      - port 22/3389/21... (dịch vụ login) -> BRUTE_FORCE
+      - port khác / nhiều port             -> PORT_SCAN
     """
     if "filterlog" not in raw:
         return None
     if ",block," not in raw and ",block" not in raw:   # chỉ quan tâm gói bị CHẶN
         return None
+
     ips = RE_ANY_IP.findall(raw)
     if len(ips) < 2:
         return None
     src, dst = ips[0], ips[1]
     attacker = pick_attacker(src, dst)
-    if is_internal(attacker):        # nếu cả 2 đều nội bộ -> bỏ qua
+
+    # Bỏ qua nếu attacker là nội bộ hoặc noise hạ tầng
+    if is_internal(attacker) or should_ignore(attacker):
         return None
+
+    # Lấy port đích để đoán loại tấn công
+    dport = None
+    m = RE_FILTERLOG_PORTS.search(raw)
+    if m:
+        try:
+            dport = int(m.group(4))
+        except ValueError:
+            dport = None
+
+    if dport in BRUTE_PORTS:
+        event_type = "BRUTE_FORCE"
+        severity   = "HIGH"
+        message    = f"firewall block - nghi brute force {BRUTE_PORTS[dport]} (port {dport})"
+    else:
+        event_type = "PORT_SCAN"
+        severity   = "MEDIUM"
+        message    = f"firewall block - nghi port scan (port {dport})"
+
     return {
-        "event_type": "PORT_SCAN",
+        "event_type": event_type,
         "src_ip": attacker,
         "dst_ip": dst if attacker == src else src,
+        "dst_port": dport,
         "protocol": "tcp" if ",tcp," in raw.lower() else None,
-        "severity": "MEDIUM",
-        "message": "firewall block (filterlog)",
+        "severity": severity,
+        "message": message,
         "detector": "filterlog",
     }
 
 
 def parse_line(raw: str):
-    """
-    Trái tim của forwarder: nhận 1 DÒNG syslog thô, thử khớp lần lượt
-    từng loại. Trả về dict (nếu nhận diện được) hoặc None (bỏ qua).
-    """
+    """Nhận 1 dòng syslog thô, trả về dict đã chuẩn hóa hoặc None."""
     low = raw.lower()
 
-    # (1) Alert Suricata — ưu tiên cao nhất vì IDS đã phân tích sẵn
+    # (1) Suricata alert — ưu tiên cao nhất (đã phân tích sẵn, chính xác)
     if "[**]" in raw and RE_FLOW.search(raw):
         flow = RE_FLOW.search(raw)
         prio = RE_PRIORITY.search(raw).group(1) if RE_PRIORITY.search(raw) else "2"
         msg  = RE_MSG.search(raw).group(1) if RE_MSG.search(raw) else ""
         clz  = RE_CLASS.search(raw).group(1) if RE_CLASS.search(raw) else ""
         src, dst = flow.group(2), flow.group(4)
+        attacker = pick_attacker(src, dst)
+        if should_ignore(attacker):
+            return None
         return {
             "event_type": classify_suricata(msg, clz),
-            "src_ip": pick_attacker(src, dst),
+            "src_ip": attacker,
             "dst_ip": dst,
+            "dst_port": int(flow.group(5)) if flow.group(5).isdigit() else None,
             "protocol": flow.group(1),
             "severity": severity_from_priority(prio),
             "message": msg,
@@ -203,7 +235,7 @@ def parse_line(raw: str):
             "message": raw[-200:], "detector": "vpn",
         }
 
-    # (3) Thiết bị mới (DHCP cấp lease)
+    # (3) Thiết bị mới (DHCP)
     if "dhcp" in low and ("dhcpack" in low or "new lease" in low) and RE_MAC.search(raw):
         ips = RE_ANY_IP.findall(raw)
         return {
@@ -213,16 +245,17 @@ def parse_line(raw: str):
             "message": RE_MAC.search(raw).group(1), "detector": "dhcp",
         }
 
-    # (4) Firewall block (filterlog)
+    # (4) Firewall block (filterlog) — đoán theo port đích
     fw = parse_filterlog(raw)
     if fw:
         return fw
 
-    # (5) Không khớp gì — chỉ forward khi bật DEBUG
+    # (5) Không nhận diện — chỉ forward khi bật DEBUG
     if DEBUG_FORWARD_ALL:
+        ip = (RE_ANY_IP.findall(raw) or [None])[0]
         return {
             "event_type": "UNKNOWN",
-            "src_ip": (RE_ANY_IP.findall(raw) or [None])[0],
+            "src_ip": ip,
             "dst_ip": None, "protocol": None, "severity": "LOW",
             "message": raw[-200:], "detector": "debug",
         }
@@ -230,7 +263,6 @@ def parse_line(raw: str):
 
 
 def post_to_n8n(payload: dict):
-    """Đóng gói dict thành JSON và POST sang webhook n8n."""
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         N8N_WEBHOOK, data=body,
@@ -245,64 +277,43 @@ def post_to_n8n(payload: dict):
 
 
 # ╔══════════════════════════════════════════════════════════════════╗
-# ║ PHẦN 5 — VÒNG LẶP CHÍNH: NƠI NHẬN TÍN HIỆU TỪ pfSense            ║                               ║
+# ║ PHẦN 5 — VÒNG LẶP CHÍNH: NHẬN TÍN HIỆU TỪ pfSense                ║
 # ╚══════════════════════════════════════════════════════════════════╝
 
 def main():
-    # --- Mở "ổ cắm" UDP và gắn vào port 514 của máy n8n ---
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # SOCK_DGRAM = UDP
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)   # UDP
     sock.bind((LISTEN_IP, LISTEN_PORT))
-    #   ^ Sau dòng này, mọi gói UDP gửi tới 192.168.10.2:514 sẽ vào socket này.
-
     print(f"[forwarder] nghe syslog UDP {LISTEN_IP}:{LISTEN_PORT}")
     print(f"[forwarder] chi nhan tu pfSense? {ONLY_ACCEPT_FROM_PFSENSE} (pfSense={PFSENSE_IP})")
+    print(f"[forwarder] DEBUG_FORWARD_ALL = {DEBUG_FORWARD_ALL}")
     print(f"[forwarder] forward toi {N8N_WEBHOOK}")
-    print(f"[forwarder] ghi log vao {LOG_FILE}\n")
+    print(f"[forwarder] ghi log vao {LOG_FILE} ({LOG_BACKUP}x{LOG_MAX_BYTES//1024//1024}MB)\n")
 
     while True:
-        # ============================================================
-        # ĐÂY LÀ DÒNG NHẬN TÍN HIỆU TỪ pfSense (10.1):
-        #   - Chương trình DỪNG ở đây, ngồi chờ tới khi có gói UDP đến.
-        #   - Khi pfSense bắn 1 dòng syslog sang, recvfrom() "tỉnh dậy".
-        #   - Nó trả về 2 thứ:
-        #       data = nội dung log (dạng bytes)
-        #       addr = (IP_người_gửi, port_người_gửi)
-        #   - => addr[0] CHÍNH LÀ IP CỦA pfSense = "192.168.10.1"
-        #        Đây là cách ta BIẾT tín hiệu đến từ pfSense.
-        # ============================================================
+        # >>> DÒNG NHẬN TÍN HIỆU: recvfrom trả về (nội dung, (IP_gửi, port)) <<<
         data, addr = sock.recvfrom(8192)
-        sender_ip = addr[0]           # <-- IP người gửi. Với pfSense = 192.168.10.1
+        sender_ip = addr[0]           # = 192.168.10.1 khi pfSense gửi
 
-        # --- (Tùy chọn) Lọc: chỉ xử lý nếu đúng là pfSense gửi ---
         if ONLY_ACCEPT_FROM_PFSENSE and sender_ip != PFSENSE_IP:
-            # Gói đến từ IP khác pfSense -> bỏ qua (chống giả mạo log)
-            continue
+            continue                  # bỏ gói không phải từ pfSense
 
-        # --- Đổi bytes thành chuỗi text để đọc ---
         raw = data.decode("utf-8", errors="replace").strip()
-
-        # --- DỊCH: parse dòng text thành dict có cấu trúc ---
         parsed = parse_line(raw)
         if not parsed:
-            # Log nền (DNS/NTP/...) không nhận diện được -> bỏ qua, chờ gói kế
-            continue
+            continue                  # log nền / noise -> bỏ qua
 
-        # --- Gắn thêm metadata: thời gian, site, VÀ ai đã gửi ---
         parsed.update({
             "event_id": f"evt-{int(datetime.now().timestamp()*1000)}",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "site": SITE,
-            "source_host": sender_ip,   # <-- lưu lại IP pfSense đã gửi (để truy vết)
+            "source_host": sender_ip,
         })
 
-        # --- In ra màn hình cho Khải nhìn thấy tín hiệu ---
         print(f"[{datetime.now().strftime('%H:%M:%S')}] tu {sender_ip} -> "
-              f"{parsed['event_type']} (src={parsed.get('src_ip')}, by={parsed.get('detector')})")
+              f"{parsed['event_type']} (src={parsed.get('src_ip')}, "
+              f"port={parsed.get('dst_port')}, by={parsed.get('detector')})")
 
-        # --- GỬI: POST sang n8n ---
         status = post_to_n8n(parsed)
-
-        # --- Ghi log ra file (backup + forensics) ---
         logger.info(json.dumps({**parsed, "n8n_status": status}, ensure_ascii=False))
 
 
