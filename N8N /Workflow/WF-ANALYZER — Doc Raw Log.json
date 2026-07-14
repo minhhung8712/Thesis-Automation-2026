@@ -1,0 +1,107 @@
+{
+  "name": "WF-ANALYZER — Doc Raw Log",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "seconds",
+              "secondsInterval": 10
+            }
+          ]
+        }
+      },
+      "id": "c1a00000-0001-4001-8001-000000000001",
+      "name": "Every 10s",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        220,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "fileSelector": "C:/Users/Administrator/Desktop/N8N/pflogs/pfsense.log",
+        "options": {}
+      },
+      "id": "c1a00000-0002-4002-8002-000000000002",
+      "name": "Read pfsense.log",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        440,
+        320
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "text",
+        "binaryPropertyName": "data",
+        "options": {}
+      },
+      "id": "c1a00000-0003-4003-8003-000000000003",
+      "name": "Extract Text",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        660,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== WF-ANALYZER Chang 1: Doc file raw + parse co ban =====\n// Muc tieu: xac nhan n8n DOC DUOC file pfsense.log do collector ghi,\n// tach timestamp + raw, phan loai nguon log. CHUA dem nguong (chang sau).\n\n// Node \"Extract from File\" da chuyen noi dung file -> $json.data (text)\nconst content = $input.first().json.data || '';\nconst lines = content.split('\\n').filter(l => l.trim());\n\n// Dem theo nguon log (de biet co du lieu gi)\nconst counts = { filterlog: 0, auth: 0, suricata: 0, dhcp: 0, other: 0 };\nconst parsed = [];\n\nfor (const line of lines) {\n  // Tach timestamp thu nhan (collector ghi dau dong, ngan cach TAB) + raw\n  let ts = null, raw = line;\n  const tabIdx = line.indexOf('\\t');\n  if (tabIdx >= 0) {\n    ts = line.slice(0, tabIdx);\n    raw = line.slice(tabIdx + 1);\n  }\n\n  // Phan loai nguon log\n  const low = raw.toLowerCase();\n  let source = 'other';\n  if (low.includes('filterlog')) source = 'filterlog';\n  else if (low.includes('failed password') || low.includes('invalid user')) source = 'auth';\n  else if (raw.includes('[**]')) source = 'suricata';\n  else if (low.includes('dhcp')) source = 'dhcp';\n  counts[source]++;\n\n  parsed.push({ ts, source, raw });\n}\n\n// Tra ve tong quan + 10 dong cuoi de kiem tra\nreturn [{ json: {\n  total_lines: lines.length,\n  counts: counts,\n  sample_last_10: parsed.slice(-10),\n}}];\n"
+      },
+      "id": "c1a00000-0004-4004-8004-000000000004",
+      "name": "Parse Log Lines",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        320
+      ]
+    }
+  ],
+  "connections": {
+    "Every 10s": {
+      "main": [
+        [
+          {
+            "node": "Read pfsense.log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read pfsense.log": {
+      "main": [
+        [
+          {
+            "node": "Extract Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Text": {
+      "main": [
+        [
+          {
+            "node": "Parse Log Lines",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
