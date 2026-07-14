@@ -50,7 +50,7 @@ N8N_TIMEOUT    = 3        # giây — KHÔNG chờ n8n lâu, tránh nghẽn vòn
 
 SITE = "HCM-01"           # gắn kèm mỗi payload gửi n8n, để phân biệt nếu có nhiều site
 
-LOG_DIR          = "./pflogs"        # thư mục chứa pfsense.log + các file đã rotate
+LOG_DIR = r"C:\Users\Administrator\.n8n-files\pflogs"       # thư mục chứa pfsense.log + các file đã rotate
 ACTIVE_LOG_NAME  = "pfsense.log"     # tên file đang ghi (LUÔN LUÔN cố định tên này khi active)
 ROTATE_MAX_BYTES = 5 * 1024 * 1024   # 5 MB -> rotate sang file mới có timestamp
 
