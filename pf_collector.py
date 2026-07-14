@@ -45,7 +45,7 @@ PFSENSE_IP  = "192.168.10.1"
 ONLY_ACCEPT_FROM_PFSENSE = False   # True = chỉ nhận gói từ pfSense (nên bật ở production)
 
 N8N_WEBHOOK    = "http://127.0.0.1:5678/webhook/pfsense-raw"   # webhook nhận RAW log
-FORWARD_TO_N8N = True     # False = tắt forward n8n, chỉ ghi file (hữu ích khi debug/offline)
+FORWARD_TO_N8N = False     # False = tắt forward n8n, chỉ ghi file (hữu ích khi debug/offline)
 N8N_TIMEOUT    = 3        # giây — KHÔNG chờ n8n lâu, tránh nghẽn vòng lặp nhận UDP
 
 SITE = "HCM-01"           # gắn kèm mỗi payload gửi n8n, để phân biệt nếu có nhiều site
