@@ -1,0 +1,251 @@
+{
+  "name": "WF-BLOCK-DDOS — Doc Ban DDoS -> Goi Ansible",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "seconds",
+              "secondsInterval": 10
+            }
+          ]
+        }
+      },
+      "id": "d1000000-0001-0000-0000-000000000001",
+      "name": "Every 10s",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        180,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "fileSelector": "C:/Users/Administrator/.n8n-files/pflogs/BanIP_DDOS.txt",
+        "options": {}
+      },
+      "id": "d1000000-0002-0000-0000-000000000002",
+      "name": "Read BanIP_DDOS",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        380,
+        340
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "text",
+        "binaryPropertyName": "data",
+        "options": {}
+      },
+      "id": "d1000000-0003-0000-0000-000000000003",
+      "name": "Extract Ban Text",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        580,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== Doc BanIP_DDOS.txt + loc IP MOI (chua goi Ansible) =====\n// Dung static data (session) de nho IP da goi block -> khong goi trung.\n\nconst content = $('Extract Ban Text').first().json.data || '';\nconst ips = content.split('\\n').map(s => s.trim()).filter(s => s);\n\nconst staticData = $getWorkflowStaticData('global');\nstaticData.blocked = staticData.blocked || [];\n\nconst newIps = [];\nfor (const ip of ips) {\n  if (!staticData.blocked.includes(ip)) {\n    staticData.blocked.push(ip);\n    newIps.push(ip);\n  }\n}\n\nif (newIps.length === 0) {\n  return [{ json: { no_new_ip: true } }];\n}\nreturn newIps.map(ip => ({ json: {\n  ip: ip,\n  reason: 'DDoS/CONN_FLOOD detected by n8n analyzer',\n  attack_type: 'DDOS',\n}}));\n"
+      },
+      "id": "d1000000-0004-0000-0000-000000000004",
+      "name": "Loc IP Moi (Session)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.no_new_ip }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "d1000000-0005-0000-0000-000000000005",
+      "name": "Khong co IP moi?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        340
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "d1000000-0006-0000-0000-000000000006",
+      "name": "Dung",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1220,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://192.168.10.3:8000/block-ip",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Token",
+              "value": "n8n-secret-token-123"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"ip\": \"{{ $json.ip }}\",\n  \"reason\": \"{{ $json.reason }}\"\n}",
+        "options": {}
+      },
+      "id": "d1000000-0007-0000-0000-000000000007",
+      "name": "Goi Ansible /block-ip",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1220,
+        440
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {},
+      "id": "d1000000-0008-0000-0000-000000000008",
+      "name": "Block OK",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1440,
+        360
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "d1000000-0009-0000-0000-000000000009",
+      "name": "Block Loi -> Alert",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1440,
+        540
+      ]
+    }
+  ],
+  "connections": {
+    "Every 10s": {
+      "main": [
+        [
+          {
+            "node": "Read BanIP_DDOS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read BanIP_DDOS": {
+      "main": [
+        [
+          {
+            "node": "Extract Ban Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Ban Text": {
+      "main": [
+        [
+          {
+            "node": "Loc IP Moi (Session)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loc IP Moi (Session)": {
+      "main": [
+        [
+          {
+            "node": "Khong co IP moi?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Khong co IP moi?": {
+      "main": [
+        [
+          {
+            "node": "Dung",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Goi Ansible /block-ip",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Goi Ansible /block-ip": {
+      "main": [
+        [
+          {
+            "node": "Block OK",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Block Loi -> Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
