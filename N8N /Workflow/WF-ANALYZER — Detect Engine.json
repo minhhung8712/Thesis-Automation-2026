@@ -1,0 +1,330 @@
+{
+  "name": "WF-ANALYZER — Detect Engine (Chang 2)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "seconds",
+              "secondsInterval": 10
+            }
+          ]
+        }
+      },
+      "id": "c2a00000-0001-4001-8001-000000000001",
+      "name": "Every 10s",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        200,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "fileSelector": "C:/Users/Administrator/.n8n-files/pflogs/pfsense.log",
+        "options": {}
+      },
+      "id": "c2a00000-0002-4002-8002-000000000002",
+      "name": "Read pfsense.log",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        420,
+        340
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "text",
+        "binaryPropertyName": "data",
+        "options": {}
+      },
+      "id": "c2a00000-0003-4003-8003-000000000003",
+      "name": "Extract Text",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        640,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// WF-ANALYZER Chang 2: ENGINE PHAN TICH NGUONG (chay trong n8n)\n// ============================================================\n// Nhan toan bo dong log da parse (tu node truoc), dem theo IP trong\n// cua so thoi gian truot, phan loai PORT_SCAN / BRUTE_FORCE / DDOS.\n// Day la \"bo nao\" cua he thong - lam trong n8n de the hien nang luc\n// dieu phoi + phan tich cua n8n (khong day het sang Python rieng).\n\nconst input = $input.first().json;\nconst lines = input.sample_last_10 ? null : null; // placeholder, xem duoi\n\n// ---- Lay lai toan bo dong da parse tu node Parse Log Lines ----\n// (Node truoc chi tra ve sample_last_10 de xem nhanh; o day ta parse\n//  LAI toan bo raw text de co ĐẦY ĐỦ du lieu cho engine dem nguong.)\nconst content = $('Extract Text').first().json.data || '';\nconst rawLines = content.split('\\n').filter(l => l.trim());\n\n// ---- Cau hinh (giu dung can cu nhu ban Python truoc) ----\nconst INTERNAL_NETS = ['192.168.10.', '192.168.11.', '192.168.12.', '192.168.20.'];\nconst IGNORE_PREFIXES = ['169.254.', '224.', '239.', '255.', '0.', '127.'];\nconst IGNORE_EXACT = ['192.168.183.1', '192.168.10.1'];\n\nconst THRESHOLDS = {\n  BRUTE_FORCE: { count: 5, window: 60 },          // 5 lan fail dang nhap / 60s\n  PORT_SCAN:   { distinctPorts: 15, window: 10 },  // 15 port khac nhau / 10s\n  CONN_FLOOD:  { count: 100, window: 10 },         // 100 su kien / 10s (1 IP)\n  DDOS_SPREAD: { distinctIps: 20, window: 10 },    // 20 IP khac nhau / 10s\n};\n\nfunction isInternal(ip) { return ip && INTERNAL_NETS.some(n => ip.startsWith(n)); }\nfunction shouldIgnore(ip) {\n  if (!ip) return true;\n  if (IGNORE_EXACT.includes(ip)) return true;\n  return IGNORE_PREFIXES.some(p => ip.startsWith(p));\n}\nfunction pickAttacker(src, dst) {\n  if (src && !isInternal(src)) return src;\n  if (dst && !isInternal(dst)) return dst;\n  return src || dst;\n}\n\n// ---- Regex bóc tách ----\nconst RE_ANY_IP = /\\b(\\d{1,3}(?:\\.\\d{1,3}){3})\\b/g;\nconst RE_FILTERLOG_TCP = /,tcp,\\d+,(\\d{1,3}(?:\\.\\d{1,3}){3}),(\\d{1,3}(?:\\.\\d{1,3}){3}),(\\d+),(\\d+),[^,]*,([A-Z]*)/;\nconst RE_SSH_FAIL = /Failed password for (?:invalid user )?(\\S+) from (\\d{1,3}(?:\\.\\d{1,3}){3}) port (\\d+)/;\n\n// ---- Parse 1 dong -> tin hieu tho (giong ham extract_signal ben Python) ----\nfunction extractSignal(raw) {\n  const low = raw.toLowerCase();\n\n  // Auth log SSH fail -> tin hieu brute force\n  const authM = raw.match(RE_SSH_FAIL);\n  if (authM) {\n    const ip = authM[2];\n    if (shouldIgnore(ip) || isInternal(ip)) return null;\n    return { kind: 'auth_fail', src_ip: ip, dst_port: 22 };\n  }\n\n  // Filterlog: firewall block/pass\n  if (low.includes('filterlog') && (low.includes(',block,') || low.includes(',pass,'))) {\n    const ips = [...raw.matchAll(RE_ANY_IP)].map(m => m[1]);\n    if (ips.length < 2) return null;\n    const [src, dst] = ips;\n    const attacker = pickAttacker(src, dst);\n    if (isInternal(attacker) || shouldIgnore(attacker)) return null;\n\n    const tcpM = raw.match(RE_FILTERLOG_TCP);\n    let dport = null, flags = null;\n    if (tcpM) { dport = parseInt(tcpM[4], 10); flags = tcpM[5]; }\n\n    const kind = (flags === 'S') ? 'syn' : 'fw_block';\n    return { kind, src_ip: attacker, dst_port: dport };\n  }\n  return null;\n}\n\n// ---- Engine dem theo IP trong cua so thoi gian (dung timestamp THU NHAN) ----\nconst events = {};      // ip -> [{ts, port, kind}]\nconst globalEvents = []; // toan he thong (cho DDoS phan tan)\n\nfunction nowFromLine(line) {\n  const tab = line.indexOf('\\t');\n  if (tab < 0) return Date.now() / 1000;\n  const tsStr = line.slice(0, tab);\n  const t = Date.parse(tsStr);\n  return isNaN(t) ? Date.now() / 1000 : t / 1000;\n}\n\nconst detections = [];   // ket qua: IP nao vuot nguong, loai gi\n\nfor (const line of rawLines) {\n  const tab = line.indexOf('\\t');\n  const raw = tab >= 0 ? line.slice(tab + 1) : line;\n  const now = nowFromLine(line);\n\n  const sig = extractSignal(raw);\n  if (!sig) continue;\n\n  const ip = sig.src_ip;\n  if (!events[ip]) events[ip] = [];\n  events[ip].push({ ts: now, port: sig.dst_port, kind: sig.kind });\n  globalEvents.push({ ts: now, ip });\n}\n\n// ---- Xet nguong cho tung IP (dua tren toan bo su kien da gom) ----\nfunction countInWindow(evList, now, windowSec, kindFilter, portFilter) {\n  return evList.filter(e =>\n    (now - e.ts) <= windowSec &&\n    (!kindFilter || e.kind === kindFilter) &&\n    (portFilter === undefined || e.port === portFilter)\n  ).length;\n}\nfunction distinctPortsInWindow(evList, now, windowSec, kindFilter) {\n  const ports = new Set();\n  evList.forEach(e => {\n    if ((now - e.ts) <= windowSec && (!kindFilter || e.kind === kindFilter) && e.port != null) {\n      ports.add(e.port);\n    }\n  });\n  return ports.size;\n}\n\nconst nowMax = rawLines.length ? nowFromLine(rawLines[rawLines.length - 1]) : Date.now() / 1000;\n\nfor (const ip of Object.keys(events)) {\n  const evList = events[ip];\n  let found = null;\n\n  // 1) BRUTE_FORCE: nhieu auth_fail cung 1 port trong window\n  const authFails = evList.filter(e => e.kind === 'auth_fail');\n  if (authFails.length) {\n    const byPort = {};\n    authFails.forEach(e => { byPort[e.port] = (byPort[e.port] || 0) + 1; });\n    for (const port of Object.keys(byPort)) {\n      const cnt = countInWindow(evList, nowMax, THRESHOLDS.BRUTE_FORCE.window, 'auth_fail', Number(port));\n      if (cnt >= THRESHOLDS.BRUTE_FORCE.count) { found = { type: 'BRUTE_FORCE', metric: cnt }; break; }\n    }\n  }\n\n  // 2) CONN_FLOOD: tong su kien 1 IP qua nhieu trong window\n  if (!found) {\n    const total = countInWindow(evList, nowMax, THRESHOLDS.CONN_FLOOD.window);\n    if (total >= THRESHOLDS.CONN_FLOOD.count) found = { type: 'CONN_FLOOD', metric: total };\n  }\n\n  // 3) PORT_SCAN: nhieu port khac nhau trong window\n  if (!found) {\n    const dp = distinctPortsInWindow(evList, nowMax, THRESHOLDS.PORT_SCAN.window, 'fw_block');\n    if (dp >= THRESHOLDS.PORT_SCAN.distinctPorts) found = { type: 'PORT_SCAN', metric: dp };\n  }\n\n  if (found) detections.push({ src_ip: ip, event_type: found.type, metric: found.metric });\n}\n\n// 4) DDoS phan tan: nhieu IP khac nhau cung tan cong trong window\nconst recentGlobal = globalEvents.filter(e => (nowMax - e.ts) <= 10);\nconst distinctIps = new Set(recentGlobal.map(e => e.ip)).size;\nif (distinctIps >= THRESHOLDS.DDOS_SPREAD.distinctIps) {\n  detections.push({ src_ip: 'MULTIPLE', event_type: 'DDOS', metric: `${distinctIps} IP` });\n}\n\nreturn [{ json: {\n  total_lines_scanned: rawLines.length,\n  ips_tracked: Object.keys(events).length,\n  detections: detections,\n}}];\n"
+      },
+      "id": "c2a00000-0004-4004-8004-000000000004",
+      "name": "Detect Engine (Nguong)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "detections",
+        "options": {}
+      },
+      "id": "c2a00000-0005-4005-8005-000000000005",
+      "name": "Split Detections",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        1080,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.event_type }}",
+                    "rightValue": "PORT_SCAN",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "PORT_SCAN"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.event_type }}",
+                    "rightValue": "BRUTE_FORCE",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "BRUTE_FORCE"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.event_type }}",
+                    "rightValue": "CONN_FLOOD",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "CONN_FLOOD"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.event_type }}",
+                    "rightValue": "DDOS",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "DDOS"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "none"
+        }
+      },
+      "id": "c2a00000-0006-4006-8006-000000000006",
+      "name": "Route by Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1300,
+        340
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "c2a00000-0007-0000-0000-000000000007",
+      "name": "→ Ansible BLOCK_SCAN",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1560,
+        140
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "c2a00000-0008-0000-0000-000000000008",
+      "name": "→ Ansible BLOCK_BRUTE + Telegram",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1560,
+        300
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "c2a00000-0009-0000-0000-000000000009",
+      "name": "→ Ansible BLOCK_DDOS",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1560,
+        460
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "c2a00000-0010-0000-0000-000000000010",
+      "name": "→ DDoS Notify Only",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1560,
+        620
+      ]
+    }
+  ],
+  "connections": {
+    "Every 10s": {
+      "main": [
+        [
+          {
+            "node": "Read pfsense.log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read pfsense.log": {
+      "main": [
+        [
+          {
+            "node": "Extract Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Text": {
+      "main": [
+        [
+          {
+            "node": "Detect Engine (Nguong)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detect Engine (Nguong)": {
+      "main": [
+        [
+          {
+            "node": "Split Detections",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Detections": {
+      "main": [
+        [
+          {
+            "node": "Route by Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Type": {
+      "main": [
+        [
+          {
+            "node": "→ Ansible BLOCK_SCAN",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "→ Ansible BLOCK_BRUTE + Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "→ Ansible BLOCK_DDOS",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "→ DDoS Notify Only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
