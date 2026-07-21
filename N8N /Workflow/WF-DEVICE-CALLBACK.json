@@ -1,0 +1,527 @@
+{
+  "name": "WF-DEVICE-CALLBACK — Xu ly nut bam -> Ansible + cap nhat file",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "callback_query"
+        ],
+        "additionalFields": {}
+      },
+      "id": "c1000000-0001-0000-0000-000000000001",
+      "name": "On Button Press",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        160,
+        460
+      ],
+      "webhookId": "cb00cb00-cb00-4cb0-8cb0-cb00cb00cb00"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Tach callback_data cua nut bam: dinh dang \"approve|<mac>\" / \"reject|<mac>\"\nconst cq = $json.callback_query || {};\nconst data = cq.data || '';\nconst idx = data.indexOf('|');\nconst action = (idx >= 0 ? data.slice(0, idx) : data).toLowerCase();\nconst mac    = (idx >= 0 ? data.slice(idx + 1) : '').toLowerCase();\nreturn [{ json: {\n  action, mac,\n  callback_query_id: cq.id,\n  chat_id: cq.message?.chat?.id,\n  message_id: cq.message?.message_id,\n  by: cq.from?.username || cq.from?.first_name || 'admin'\n}}];\n"
+      },
+      "id": "c1000000-0002-0000-0000-000000000002",
+      "name": "Parse Callback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        380,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "approve",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "c1000000-0003-0000-0000-000000000003",
+      "name": "APPROVE?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        600,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "fileSelector": "C:/Users/Administrator/.n8n-files/pflogs/approved_macs.txt",
+        "options": {}
+      },
+      "id": "c1000000-0010-0000-0000-000000000010",
+      "name": "Read Approved (cb)",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        820,
+        300
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "text",
+        "binaryPropertyName": "data",
+        "options": {}
+      },
+      "id": "c1000000-0011-0000-0000-000000000011",
+      "name": "Extract Approved (cb)",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        1020,
+        300
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "fileSelector": "C:/Users/Administrator/.n8n-files/pflogs/pending_macs.txt",
+        "options": {}
+      },
+      "id": "c1000000-0012-0000-0000-000000000012",
+      "name": "Read Pending (cb)",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        1220,
+        300
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "text",
+        "binaryPropertyName": "data",
+        "options": {}
+      },
+      "id": "c1000000-0013-0000-0000-000000000013",
+      "name": "Extract Pending (cb)",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        1420,
+        300
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// APPROVE: chon IP trong dai 192.168.12.11 - 192.168.12.199 (bo cac IP da cap),\n// tra hostname tu pending, chuan bi dong ghi approved_macs.txt + text sua tin nhan.\nconst approvedTxt = $('Extract Approved (cb)').first()?.json?.data || '';\nconst pendingTxt  = $('Extract Pending (cb)').first()?.json?.data || '';\nconst info = $('Parse Callback').first().json;\nconst mac  = info.mac;\n\n// IP da su dung\nconst used = new Set();\nfor (const l of approvedTxt.split('\\n')) {\n  const p = l.split(',');\n  if (p[1] && p[1].trim()) used.add(p[1].trim());\n}\n// chon IP trong dau tien\nlet ip = null;\nfor (let i = 11; i <= 199; i++) {\n  const cand = '192.168.12.' + i;\n  if (!used.has(cand)) { ip = cand; break; }\n}\n// hostname tu pending\nlet hostname = '';\nfor (const l of pendingTxt.split('\\n')) {\n  const p = l.split(',');\n  if ((p[0] || '').trim().toLowerCase() === mac) { hostname = (p[1] || '').trim(); break; }\n}\n\nif (!ip) {\n  return [{ json: { ...info, hostname, ip: null,\n    edit_text: '\\u26A0\\uFE0F KHONG THE APPROVE ' + mac + '\\nHet IP trong trong dai 12.11-12.199.' }}];\n}\nreturn [{ json: {\n  ...info, ip, hostname,\n  approved_line: mac + ',' + ip + ',' + hostname + '\\n',\n  edit_text: '\\u2705 DA APPROVE\\nMAC: ' + mac + '\\nIP: ' + ip +\n             '\\nHostname: ' + (hostname || '(khong ro)') + '\\nBoi: ' + info.by\n}}];\n"
+      },
+      "id": "c1000000-0014-0000-0000-000000000014",
+      "name": "Pick Free IP",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1620,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "toText",
+        "sourceProperty": "approved_line",
+        "options": {}
+      },
+      "id": "c1000000-0015-0000-0000-000000000015",
+      "name": "Approved -> Binary",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        1820,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "C:/Users/Administrator/.n8n-files/pflogs/approved_macs.txt",
+        "options": {
+          "append": true
+        }
+      },
+      "id": "c1000000-0016-0000-0000-000000000016",
+      "name": "Ghi approved_macs.txt",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        2020,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://192.168.10.3:8000/add-static-mapping",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Token",
+              "value": "n8n-secret-token-123"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"mac\": \"{{ $json.mac }}\",\n  \"ip\": \"{{ $json.ip }}\",\n  \"hostname\": \"{{ $json.hostname }}\"\n}",
+        "options": {}
+      },
+      "id": "c1000000-0017-0000-0000-000000000017",
+      "name": "Ansible /add-static-mapping",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2220,
+        300
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// REJECT: chuan bi dong ghi rejected_macs.txt + text sua tin nhan.\nconst info = $('Parse Callback').first().json;\nconst mac = info.mac;\nreturn [{ json: {\n  ...info,\n  reject_line: mac + '\\n',\n  edit_text: '\\u26D4 DA REJECT\\nMAC: ' + mac + '\\nThiet bi se bi chan cap IP.\\nBoi: ' + info.by\n}}];\n"
+      },
+      "id": "c1000000-0020-0000-0000-000000000020",
+      "name": "Build Reject",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        820,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "toText",
+        "sourceProperty": "reject_line",
+        "options": {}
+      },
+      "id": "c1000000-0021-0000-0000-000000000021",
+      "name": "Reject -> Binary",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        1020,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "C:/Users/Administrator/.n8n-files/pflogs/rejected_macs.txt",
+        "options": {
+          "append": true
+        }
+      },
+      "id": "c1000000-0022-0000-0000-000000000022",
+      "name": "Ghi rejected_macs.txt",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        1220,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://192.168.10.3:8000/deny-mac",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Token",
+              "value": "n8n-secret-token-123"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"mac\": \"{{ $json.mac }}\",\n  \"reason\": \"Rejected by admin via Telegram\"\n}",
+        "options": {}
+      },
+      "id": "c1000000-0023-0000-0000-000000000023",
+      "name": "Ansible /deny-mac",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1420,
+        620
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot<BOT_TOKEN>/answerCallbackQuery",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ callback_query_id: $json.callback_query_id, text: 'Da ghi nhan' }) }}",
+        "options": {}
+      },
+      "id": "c1000000-0030-0000-0000-000000000030",
+      "name": "Answer Callback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2460,
+        460
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot<BOT_TOKEN>/editMessageText",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $json.chat_id, message_id: $json.message_id, text: $json.edit_text, reply_markup: { inline_keyboard: [] } }) }}",
+        "options": {}
+      },
+      "id": "c1000000-0031-0000-0000-000000000031",
+      "name": "Edit Message (go nut)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2680,
+        460
+      ],
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "On Button Press": {
+      "main": [
+        [
+          {
+            "node": "Parse Callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Callback": {
+      "main": [
+        [
+          {
+            "node": "APPROVE?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "APPROVE?": {
+      "main": [
+        [
+          {
+            "node": "Read Approved (cb)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Reject",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Approved (cb)": {
+      "main": [
+        [
+          {
+            "node": "Extract Approved (cb)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Approved (cb)": {
+      "main": [
+        [
+          {
+            "node": "Read Pending (cb)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Pending (cb)": {
+      "main": [
+        [
+          {
+            "node": "Extract Pending (cb)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Pending (cb)": {
+      "main": [
+        [
+          {
+            "node": "Pick Free IP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Free IP": {
+      "main": [
+        [
+          {
+            "node": "Approved -> Binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved -> Binary": {
+      "main": [
+        [
+          {
+            "node": "Ghi approved_macs.txt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ghi approved_macs.txt": {
+      "main": [
+        [
+          {
+            "node": "Ansible /add-static-mapping",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ansible /add-static-mapping": {
+      "main": [
+        [
+          {
+            "node": "Answer Callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Reject": {
+      "main": [
+        [
+          {
+            "node": "Reject -> Binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reject -> Binary": {
+      "main": [
+        [
+          {
+            "node": "Ghi rejected_macs.txt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ghi rejected_macs.txt": {
+      "main": [
+        [
+          {
+            "node": "Ansible /deny-mac",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ansible /deny-mac": {
+      "main": [
+        [
+          {
+            "node": "Answer Callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Answer Callback": {
+      "main": [
+        [
+          {
+            "node": "Edit Message (go nut)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
